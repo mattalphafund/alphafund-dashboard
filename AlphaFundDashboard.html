@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AlphaFund Dashboard</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'ui-sans-serif', 'system-ui'],
+            },
+            colors: {
+              alphafund: {
+                surface: '#120D1F',
+                border: 'rgba(123, 97, 255, 0.4)',
+                accent: '#7B61FF',
+                accentSoft: '#9F7AEA',
+              },
+            },
+            boxShadow: {
+              glow: '0 0 30px rgba(123, 97, 255, 0.25)',
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body {
+        font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: radial-gradient(circle at top left, rgba(123, 97, 255, 0.2), transparent 50%),
+          linear-gradient(160deg, #0d0a14 0%, #1b1530 60%, #090611 100%);
+        color: #f5f4ff;
+      }
+      .card-hover {
+        transition: transform 0.35s ease, box-shadow 0.35s ease, border-color 0.35s ease;
+      }
+      .card-hover:hover {
+        transform: translateY(-6px) scale(1.01);
+        box-shadow: 0 18px 45px rgba(123, 97, 255, 0.35);
+        border-color: rgba(155, 132, 255, 0.7);
+      }
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.875rem;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen">
+    <div id="root"></div>
+
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prop-types@15.8.1/prop-types.min.js"></script>
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/recharts@2.10.4/umd/Recharts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel" data-presets="env,react">
+      const { useState, useEffect, useMemo } = React;
+      const {
+        ResponsiveContainer,
+        LineChart,
+        Line,
+        CartesianGrid,
+        XAxis,
+        YAxis,
+        Tooltip,
+        Legend,
+      } = Recharts;
+
+      const formatCurrency = (value) =>
+        new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          maximumFractionDigits: 0,
+        }).format(value);
+
+      const MetricCard = ({ label, value, trend }) => (
+        <div className="card-hover rounded-2xl border border-alphafund-border/50 bg-alphafund-surface/80 p-4 shadow-xl backdrop-blur">
+          <p className="text-sm text-white/60">{label}</p>
+          <div className="mt-1 flex items-baseline gap-2">
+            <span className="text-2xl font-semibold text-white">{value}</span>
+            {trend ? (
+              <span className={`text-sm font-medium ${trend > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {trend > 0 ? '+' : ''}
+                {trend}%
+              </span>
+            ) : null}
+          </div>
+        </div>
+      );
+
+      const StatusPill = ({ status }) => {
+        const map = {
+          Complete: { color: '#34D399', icon: '✅' },
+          'In Progress': { color: '#FBBF24', icon: '🟡' },
+          'Not Started': { color: '#9CA3AF', icon: '⚪' },
+        };
+        const { color, icon } = map[status] ?? map['Not Started'];
+        return (
+          <span
+            className="status-pill"
+            style={{ backgroundColor: `${color}1a`, color }}
+          >
+            <span>{icon}</span>
+            {status}
+          </span>
+        );
+      };
+
+      const PortfolioPerformance = () => {
+        const data = useMemo(() => {
+          const baseDate = dayjs();
+          const generateSeries = (start, volatility) =>
+            Array.from({ length: 30 }).map((_, index) => {
+              const drift = start + index * (Math.random() * volatility - volatility / 2);
+              return Math.max(drift, 95 + Math.random() * 5);
+            });
+
+          const alphaSeries = generateSeries(105, 3);
+          const spSeries = generateSeries(100, 2.2);
+          const qqqSeries = generateSeries(102, 2.5);
+
+          return alphaSeries.map((value, index) => ({
+            date: baseDate.subtract(29 - index, 'day').format('MMM D'),
+            alpha: Number(value.toFixed(2)),
+            sp500: Number(spSeries[index].toFixed(2)),
+            qqq: Number(qqqSeries[index].toFixed(2)),
+          }));
+        }, []);
+
+        return (
+          <div className="card-hover flex h-full flex-col rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
+            <div className="mb-6 flex items-start justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-white">📈 Portfolio Performance</h2>
+                <p className="text-sm text-white/60">Trailing 30-day relative performance</p>
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/60">
+                Hypothetical data
+              </div>
+            </div>
+            <div className="h-64 w-full">
+              <ResponsiveContainer>
+                <LineChart data={data} margin={{ top: 10, right: 15, bottom: 5, left: 0 }}>
+                  <defs>
+                    <linearGradient id="colorAlpha" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#7B61FF" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="#7B61FF" stopOpacity={0.1} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="#ffffff10" strokeDasharray="3 3" />
+                  <XAxis dataKey="date" stroke="#ffffff60" tickLine={false} axisLine={false} minTickGap={20} />
+                  <YAxis stroke="#ffffff40" tickLine={false} axisLine={false} domain={[95, 115]} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#120D1F',
+                      borderRadius: '12px',
+                      border: '1px solid rgba(123, 97, 255, 0.4)',
+                      color: '#fff',
+                    }}
+                  />
+                  <Legend
+                    wrapperStyle={{ color: '#fff', paddingTop: '8px' }}
+                    iconType="circle"
+                    verticalAlign="bottom"
+                  />
+                  <Line type="monotone" dataKey="alpha" name="AlphaFund Model" stroke="#7B61FF" strokeWidth={2.4} dot={false} />
+                  <Line type="monotone" dataKey="sp500" name="S&P 500" stroke="#38BDF8" strokeWidth={2} dot={false} strokeDasharray="5 4" />
+                  <Line type="monotone" dataKey="qqq" name="QQQ" stroke="#F472B6" strokeWidth={2} dot={false} strokeDasharray="3 4 5 2" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <MetricCard label="Sharpe Ratio" value="1.82" trend={0.12} />
+              <MetricCard label="Monthly Return" value="4.3%" trend={0.6} />
+              <MetricCard label="Hit Rate" value="62%" trend={-1.5} />
+            </div>
+          </div>
+        );
+      };
+
+      const FundSummary = () => {
+        const currentAUM = 400000;
+        const targetAUM = 10000000;
+        const progress = Math.min((currentAUM / targetAUM) * 100, 100).toFixed(1);
+        return (
+          <div className="card-hover flex h-full flex-col rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
+            <h2 className="text-lg font-semibold text-white">💰 Fund Summary</h2>
+            <p className="mt-1 text-sm text-white/60">Quick snapshot of key capital metrics</p>
+
+            <div className="mt-8 space-y-5">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-white/50">Current AUM</p>
+                <p className="text-3xl font-semibold text-white">{formatCurrency(currentAUM)}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-5">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-white/50">Target AUM</p>
+                  <p className="text-xl font-semibold text-white/90">{formatCurrency(targetAUM)}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-white/50">Monthly Burn</p>
+                  <p className="text-xl font-semibold text-rose-300">{formatCurrency(30000)}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-5">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-white/50">Runway</p>
+                  <p className="text-xl font-semibold text-white/90">6.5 months</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-white/50">Progress</p>
+                  <p className="text-xl font-semibold text-white/90">{progress}%</p>
+                </div>
+              </div>
+              <div className="mt-3">
+                <div className="flex items-center justify-between text-xs uppercase tracking-wide text-white/50">
+                  <span>AlphaFund Capitalization</span>
+                  <span>{progress}%</span>
+                </div>
+                <div className="mt-2 h-3 w-full rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-alphafund-accent to-alphafund-accentSoft shadow-glow"
+                    style={{ width: `${progress}%` }}
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const StrategicObjectives = () => {
+        const objectives = [
+          {
+            objective: 'Launch Mark III Live',
+            status: 'Complete',
+            progress: 100,
+          },
+          {
+            objective: 'Secure $5–10M Raise',
+            status: 'In Progress',
+            progress: 40,
+          },
+          {
+            objective: 'Build ETF Partnership',
+            status: 'Not Started',
+            progress: 0,
+          },
+        ];
+
+        return (
+          <div className="card-hover rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
+            <h2 className="text-lg font-semibold text-white">🎯 Strategic Objectives</h2>
+            <p className="mt-1 text-sm text-white/60">Execution roadmap for AlphaFund 2025</p>
+
+            <div className="mt-6 overflow-hidden rounded-2xl border border-white/5 bg-white/5">
+              <div className="grid grid-cols-12 bg-white/5 px-6 py-3 text-xs font-semibold uppercase tracking-wide text-white/60">
+                <span className="col-span-6 md:col-span-6">Objective</span>
+                <span className="col-span-3 md:col-span-3">Status</span>
+                <span className="col-span-3 md:col-span-3 text-right">Progress</span>
+              </div>
+              <div>
+                {objectives.map(({ objective, status, progress }) => (
+                  <div
+                    key={objective}
+                    className="grid grid-cols-12 items-center px-6 py-4 text-sm text-white/90 odd:bg-white/0 even:bg-white/5"
+                  >
+                    <span className="col-span-6 font-medium md:col-span-6">{objective}</span>
+                    <span className="col-span-3 md:col-span-3">
+                      <StatusPill status={status} />
+                    </span>
+                    <span className="col-span-3 text-right md:col-span-3">{progress}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const Dashboard = () => {
+        const [now, setNow] = useState(dayjs());
+
+        useEffect(() => {
+          const timer = setInterval(() => setNow(dayjs()), 1000);
+          return () => clearInterval(timer);
+        }, []);
+
+        return (
+          <div className="flex min-h-screen flex-col">
+            <header className="sticky top-0 z-10 border-b border-white/5 bg-[#0d0a14d9] backdrop-blur">
+              <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-gradient-to-r from-alphafund-accent to-alphafund-accentSoft p-1.5 shadow-glow">
+                    <img
+                      src="image files/AlphaFundDashboard_logo3.png"
+                      alt="AlphaFund logo"
+                      className="h-full w-full object-contain"
+                    />
+                  </div>
+                  <div>
+                    <h1 className="text-xl font-semibold text-white">AlphaFund Dashboard</h1>
+                    <p className="text-xs uppercase tracking-wide text-white/50">Quantitative Alpha • Internal</p>
+                  </div>
+                </div>
+                <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/70">
+                  {now.format('dddd, MMM D YYYY • HH:mm:ss')}
+                </div>
+              </div>
+            </header>
+
+            <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col px-6 pb-12 pt-8">
+              <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+                <div className="xl:col-span-2">
+                  <PortfolioPerformance />
+                </div>
+                <div className="xl:col-span-1">
+                  <FundSummary />
+                </div>
+                <div className="xl:col-span-3">
+                  <StrategicObjectives />
+                </div>
+              </div>
+            </main>
+
+            <footer className="mt-6 border-t border-white/5 bg-black/10 py-6">
+              <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 text-xs text-white/50">
+                <span>AlphaFund © 2025</span>
+                <span>Internal Use Only</span>
+              </div>
+            </footer>
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<Dashboard />);
+    </script>
+  </body>
+</html>
+
