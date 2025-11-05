@@ -186,7 +186,7 @@
             </div>
             <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
               <MetricCard label="Sharpe Ratio" value="1.82" trend={0.12} />
-              <MetricCard label="Monthly Return" value="4.3%" trend={0.6} />
+              <MetricCard label="Monthly Return" value="62%" trend={0.6} />
               <MetricCard label="Hit Rate" value="62%" trend={-1.5} />
             </div>
           </div>
@@ -194,8 +194,8 @@
       };
 
       const FundSummary = () => {
-        const currentAUM = 400000;
-        const targetAUM = 10000000;
+        const currentAUM = 490103300;
+        const targetAUM = 5000000000;
         const progress = Math.min((currentAUM / targetAUM) * 100, 100).toFixed(1);
         return (
           <div className="card-hover flex h-full flex-col rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
@@ -214,7 +214,7 @@
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-white/50">Monthly Burn</p>
-                  <p className="text-xl font-semibold text-rose-300">{formatCurrency(30000)}</p>
+                  <p className="text-xl font-semibold text-rose-300">{formatCurrency(903001)}</p>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-5">
