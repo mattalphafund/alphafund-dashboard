@@ -167,6 +167,93 @@
         return `${url}${separator}token=${encodeURIComponent(token)}`;
       };
 
+      /**
+       * Builds JSONP URL by appending token and callback parameters.
+       * @param {string} url - Base endpoint URL
+       * @param {string} token - Authentication token
+       * @param {string} callbackName - Callback function name (e.g., 'handleDashboardData')
+       * @returns {string} Complete JSONP URL
+       */
+      const buildJsonpUrl = (url, token, callbackName) => {
+        if (!url) return '';
+        const baseUrl = buildUrlWithToken(url, token);
+        const separator = baseUrl.includes('?') ? '&' : '?';
+        return `${baseUrl}${separator}callback=${encodeURIComponent(callbackName)}`;
+      };
+
+      /**
+       * Loads data via JSONP by dynamically creating a script tag.
+       * @param {string} url - Base endpoint URL
+       * @param {string} token - Authentication token
+       * @param {Function} onSuccess - Success callback function
+       * @param {Function} onError - Error callback function
+       * @param {number} timeout - Timeout in milliseconds (default: 8000)
+       */
+      const loadDataViaJsonp = (url, token, onSuccess, onError, timeout = 8000) => {
+        if (!url) {
+          onError(new Error('Data endpoint is not configured.'));
+          return;
+        }
+
+        // Create unique callback name for this request
+        const callbackName = 'handleDashboardData';
+        const jsonpUrl = buildJsonpUrl(url, token, callbackName);
+
+        // Set up global callback function that will be called by JSONP response
+        let callbackInvoked = false;
+        window[callbackName] = (rawData) => {
+          if (callbackInvoked) return; // Prevent double-call
+          callbackInvoked = true;
+          
+          // Clean up
+          if (timeoutId) clearTimeout(timeoutId);
+          if (script && script.parentNode) {
+            script.parentNode.removeChild(script);
+          }
+          delete window[callbackName];
+
+          // Process data
+          onSuccess(rawData);
+        };
+
+        // Create script tag
+        const script = document.createElement('script');
+        script.src = jsonpUrl;
+        script.async = true;
+
+        // Set up error handler
+        script.onerror = () => {
+          if (callbackInvoked) return;
+          callbackInvoked = true;
+
+          // Clean up
+          if (timeoutId) clearTimeout(timeoutId);
+          if (script && script.parentNode) {
+            script.parentNode.removeChild(script);
+          }
+          delete window[callbackName];
+
+          onError(new Error('Failed to load script'));
+        };
+
+        // Set up timeout
+        const timeoutId = setTimeout(() => {
+          if (callbackInvoked) return;
+          callbackInvoked = true;
+
+          // Clean up
+          if (script && script.parentNode) {
+            script.parentNode.removeChild(script);
+          }
+          delete window[callbackName];
+
+          onError(new Error('Request timeout'));
+        }, timeout);
+
+        // Append script to trigger JSONP request
+        document.head.appendChild(script);
+      };
+
       const safeNumber = (value) => {
         if (value === null || value === undefined) return null;
         if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -512,17 +599,17 @@
       };
 
       /**
-       * React hook that fetches live data from Google Apps Script API.
+       * React hook that loads live data from Google Apps Script API via JSONP.
        * 
-       * API FETCH LOCATION: This hook performs the GET request to DATA_ENDPOINT with ?token=...
-       * - Fetches on component mount
+       * JSONP LOADER: This hook performs JSONP request to DATA_ENDPOINT with ?token=...&callback=handleDashboardData
+       * - Loads data on component mount
        * - Auto-refreshes every REFRESH_INTERVAL_MS (default: 10 minutes)
        * - Manual refresh available via returned refetch() function
        * 
        * Returns: { data, isLoading, error, lastUpdated, refetch }
        * - data: Raw JSON from API (FinanceSheet, PortfolioSheet, TechSheet arrays)
-       * - isLoading: true during fetch
-       * - error: Error message if fetch fails (null on success)
+       * - isLoading: true during load
+       * - error: Error message if load fails (null on success)
        * - lastUpdated: Timestamp from _metadata.exported_at
        * - refetch: Function to manually trigger refresh
        * 
@@ -540,7 +627,7 @@
           lastUpdated: null,
         });
 
-        const fetchData = useCallback(async () => {
+        const fetchData = useCallback(() => {
           if (!url) {
             setState((prev) => ({
               ...prev,
@@ -550,32 +637,34 @@
             return;
           }
 
+          console.log('[Dashboard] Requesting live data via JSONP...');
           setState((prev) => ({ ...prev, isLoading: true }));
 
-          try {
-            // API FETCH: Simple GET request (no custom headers or cache options) to avoid CORS preflight
-            // URL is constructed by appending ?token=... to DATA_ENDPOINT
-            // Apps Script responds with JSON and CORS headers (see AlphaFund_DataPipeline.gs)
-            const response = await fetch(buildUrlWithToken(url, token));
-            if (!response.ok) {
-              throw new Error(`Request failed with status ${response.status}`);
-            }
-            const payload = await response.json();
-            setState({
-              data: payload,
-              isLoading: false,
-              error: null,
-              lastUpdated: payload?._metadata?.exported_at ?? new Date().toISOString(),
-            });
-          } catch (err) {
-            // Error logged to console, fallback data will be used in UI
-            console.error('Failed to fetch dashboard data:', err);
-            setState((prev) => ({
-              ...prev,
-              isLoading: false,
-              error: err.message || 'Unable to load dashboard data.',
-            }));
-          }
+          // JSONP LOADER: Load data via dynamically created script tag
+          loadDataViaJsonp(
+            url,
+            token,
+            (payload) => {
+              // Success callback
+              console.log('[Dashboard] Live data loaded via JSONP');
+              setState({
+                data: payload,
+                isLoading: false,
+                error: null,
+                lastUpdated: payload?._metadata?.exported_at ?? new Date().toISOString(),
+              });
+            },
+            (err) => {
+              // Error callback
+              console.error('[Dashboard] JSONP failed, using fallback demo data', err);
+              setState((prev) => ({
+                ...prev,
+                isLoading: false,
+                error: err.message || 'Unable to load dashboard data.',
+              }));
+            },
+            8000 // 8 second timeout
+          );
         }, [url, token]);
 
         useEffect(() => {
