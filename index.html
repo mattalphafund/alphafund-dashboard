@@ -69,7 +69,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
 
     <script type="text/babel" data-presets="env,react">
-      const { useState, useEffect, useMemo } = React;
+      const { useState, useEffect, useMemo, useCallback } = React;
       const {
         ResponsiveContainer,
         LineChart,
@@ -81,6 +81,77 @@
         Legend,
       } = Recharts;
 
+      // ============================================
+      // CONFIGURATION
+      // ============================================
+      // Edit these constants to configure the dashboard's data source.
+      // No other code changes needed when updating these values.
+
+      /**
+       * Google Apps Script Web App URL that returns JSON data.
+       * This endpoint reads from Google Sheets and returns structured JSON.
+       */
+      const DATA_ENDPOINT =
+        'https://script.google.com/macros/s/AKfycbyvStDcwWPBeY9HME-BZSEmE5MOc38qOIE4Cdrjr8WvWi0S6oMBw_HnvozcGrjIYWqJXA/exec';
+
+      /**
+       * Authentication token appended to the API URL as ?token=...
+       * Must match the SHARED_SECRET_TOKEN in the Google Apps Script.
+       */
+      const DATA_TOKEN = 'ScienceMath5And9Alpha20AI9Is3Here';
+
+      /**
+       * How often to automatically refresh data from the API (in milliseconds).
+       * Default: 10 minutes (600,000 ms)
+       */
+      const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+
+      // ============================================
+      // FALLBACK DATA (used when API fails)
+      // ============================================
+
+      const generateFallbackSeries = () => {
+        const baseDate = dayjs();
+        const createPath = (start, volatility) =>
+          Array.from({ length: 30 }).map((_, index) => {
+            const drift = start + index * (Math.random() * volatility - volatility / 2);
+            return Math.max(drift, 95 + Math.random() * 5);
+          });
+
+        const alphaSeries = createPath(105, 3);
+        const spSeries = createPath(100, 2.2);
+        const qqqSeries = createPath(102, 2.5);
+
+        return alphaSeries.map((value, index) => ({
+          date: baseDate.subtract(29 - index, 'day').format('MMM D'),
+          alpha: Number(value.toFixed(2)),
+          sp500: Number(spSeries[index].toFixed(2)),
+          qqq: Number(qqqSeries[index].toFixed(2)),
+        }));
+      };
+
+      const FALLBACK_PORTFOLIO_SERIES = generateFallbackSeries();
+      const FALLBACK_METRIC_CARDS = [
+        { label: 'Sharpe Ratio', value: '1.82', trend: 0.12 },
+        { label: 'Monthly Return', value: '4.3%', trend: 0.6 },
+        { label: 'Hit Rate', value: '62%', trend: -1.5 },
+      ];
+      const FALLBACK_FUND_SUMMARY = {
+        currentAUM: 400000,
+        targetAUM: 10000000,
+        monthlyBurn: 30000,
+        runway: 6.5,
+        progress: 4.0,
+      };
+      const FALLBACK_OBJECTIVES = [
+        { objective: 'Launch Mark III Live', status: 'Complete', progress: 100 },
+        { objective: 'Secure $5–10M Raise', status: 'In Progress', progress: 40 },
+        { objective: 'Build ETF Partnership', status: 'Not Started', progress: 0 },
+      ];
+      const FALLBACK_METADATA = {
+        exported_at: new Date().toISOString(),
+      };
+
       const formatCurrency = (value) =>
         new Intl.NumberFormat('en-US', {
           style: 'currency',
@@ -88,15 +159,466 @@
           maximumFractionDigits: 0,
         }).format(value);
 
-      const MetricCard = ({ label, value, trend }) => (
-        <div className="card-hover rounded-2xl border border-alphafund-border/50 bg-alphafund-surface/80 p-4 shadow-xl backdrop-blur">
+      const buildUrlWithToken = (url, token) => {
+        if (!url) return '';
+        if (!token) return url;
+        if (url.includes('token=')) return url;
+        const separator = url.includes('?') ? '&' : '?';
+        return `${url}${separator}token=${encodeURIComponent(token)}`;
+      };
+
+      const safeNumber = (value) => {
+        if (value === null || value === undefined) return null;
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        const cleaned = String(value).replace(/[^0-9eE.+-]/g, '');
+        const parsed = Number(cleaned);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+
+      const formatPercentValue = (value, fallback) => {
+        const numeric = safeNumber(value);
+        if (numeric === null) return fallback;
+        const normalized = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+        const decimals = Math.abs(normalized) < 10 ? 1 : 0;
+        return `${normalized.toFixed(decimals)}%`;
+      };
+
+      const formatRatioValue = (value, fallback) => {
+        const numeric = safeNumber(value);
+        if (numeric === null) return fallback;
+        return numeric.toFixed(2);
+      };
+
+      const formatTimestampHint = (timestamp) => {
+        if (!timestamp) return undefined;
+        const parsed = dayjs(timestamp);
+        return parsed.isValid() ? `Updated ${parsed.format('MMM D, HH:mm')}` : undefined;
+      };
+
+      const extractSeriesValues = (rawValue) => {
+        if (rawValue == null) return {};
+        if (typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+          return {
+            alpha: safeNumber(rawValue.alpha ?? rawValue.Alpha ?? rawValue.alphaFund ?? rawValue['AlphaFund Model']),
+            sp500: safeNumber(rawValue.sp500 ?? rawValue.SP500 ?? rawValue['S&P 500']),
+            qqq: safeNumber(rawValue.qqq ?? rawValue.QQQ ?? rawValue['QQQ']),
+          };
+        }
+        if (typeof rawValue === 'string') {
+          try {
+            const parsed = JSON.parse(rawValue);
+            if (parsed && typeof parsed === 'object') {
+              return extractSeriesValues(parsed);
+            }
+          } catch (err) {
+            const parts = rawValue.split(/[,|]/).map((part) => part.trim());
+            if (parts.length >= 3) {
+              return {
+                alpha: safeNumber(parts[0]),
+                sp500: safeNumber(parts[1]),
+                qqq: safeNumber(parts[2]),
+              };
+            }
+          }
+        }
+        return {};
+      };
+
+      const parsePortfolioSeries = (sheet) => {
+        if (!Array.isArray(sheet) || sheet.length === 0) return FALLBACK_PORTFOLIO_SERIES;
+
+        const rows = sheet
+          .map((entry) => {
+            if (!entry?.metric || entry.value == null) return null;
+            const seriesValues = extractSeriesValues(entry.value);
+            if ([seriesValues.alpha, seriesValues.sp500, seriesValues.qqq].every((val) => typeof val === 'number')) {
+              const dateCandidate = dayjs(entry.metric);
+              const lastUpdatedCandidate = entry.last_updated ? dayjs(entry.last_updated) : null;
+              const timestamp = dateCandidate.isValid()
+                ? dateCandidate.toISOString()
+                : lastUpdatedCandidate && lastUpdatedCandidate.isValid()
+                ? lastUpdatedCandidate.toISOString()
+                : null;
+              return {
+                date: dateCandidate.isValid() ? dateCandidate.format('MMM D') : entry.metric,
+                timestamp,
+                alpha: Number(seriesValues.alpha.toFixed(2)),
+                sp500: Number(seriesValues.sp500.toFixed(2)),
+                qqq: Number(seriesValues.qqq.toFixed(2)),
+              };
+            }
+            return null;
+          })
+          .filter(Boolean);
+
+        if (rows.length >= 5) {
+          rows.sort((a, b) => {
+            if (a.timestamp && b.timestamp) {
+              return dayjs(a.timestamp).valueOf() - dayjs(b.timestamp).valueOf();
+            }
+            return 0;
+          });
+          return rows.map(({ timestamp, ...rest }) => rest);
+        }
+
+        return FALLBACK_PORTFOLIO_SERIES;
+      };
+
+      /**
+       * Parses PortfolioSheet data into metric cards.
+       * Indexes PortfolioSheet rows by metric name (case-insensitive) to find:
+       * - Sharpe Ratio
+       * - Monthly Return
+       * - Hit Rate
+       * @param {Array} portfolioSheet - PortfolioSheet array from API
+       * @returns {Array} Array of metric card objects with label, value, trend, hint
+       */
+      const parseMetricCards = (portfolioSheet) => {
+        if (!Array.isArray(portfolioSheet) || portfolioSheet.length === 0) return FALLBACK_METRIC_CARDS;
+
+        // Index PortfolioSheet by metric name (case-insensitive lookup)
+        const getMetricRow = (name) =>
+          portfolioSheet.find((row) => row?.metric && row.metric.toLowerCase() === name.toLowerCase());
+
+        const sharpeRow = getMetricRow('Sharpe Ratio');
+        const monthlyRow = getMetricRow('Monthly Return');
+        const hitRateRow = getMetricRow('Hit Rate');
+
+        return [
+          {
+            label: 'Sharpe Ratio',
+            value: formatRatioValue(sharpeRow?.value, FALLBACK_METRIC_CARDS[0].value),
+            trend: safeNumber(sharpeRow?.trend) ?? null,
+            hint: formatTimestampHint(sharpeRow?.last_updated),
+          },
+          {
+            label: 'Monthly Return',
+            value: formatPercentValue(monthlyRow?.value, FALLBACK_METRIC_CARDS[1].value),
+            trend: safeNumber(monthlyRow?.trend) ?? null,
+            hint: formatTimestampHint(monthlyRow?.last_updated),
+          },
+          {
+            label: 'Hit Rate',
+            value: formatPercentValue(hitRateRow?.value, FALLBACK_METRIC_CARDS[2].value),
+            trend: safeNumber(hitRateRow?.trend) ?? null,
+            hint: formatTimestampHint(hitRateRow?.last_updated),
+          },
+        ];
+      };
+
+      /**
+       * Parses FinanceSheet data into fund summary object.
+       * Indexes FinanceSheet rows by metric name (case-insensitive) to find:
+       * - Current AUM
+       * - Target AUM
+       * - Monthly Burn
+       * - Runway (in months)
+       * @param {Array} financeSheet - FinanceSheet array from API
+       * @returns {Object} Fund summary with currentAUM, targetAUM, monthlyBurn, runway, progress
+       */
+      const parseFundSummary = (financeSheet) => {
+        const fallback = { ...FALLBACK_FUND_SUMMARY };
+        if (!Array.isArray(financeSheet) || financeSheet.length === 0) return fallback;
+
+        // Index FinanceSheet by metric name (case-insensitive lookup)
+        const getValue = (name) => {
+          const row = financeSheet.find((entry) => entry?.metric && entry.metric.toLowerCase() === name.toLowerCase());
+          return row?.value;
+        };
+
+        const currentAUM = safeNumber(getValue('Current AUM')) ?? fallback.currentAUM;
+        const targetAUM = safeNumber(getValue('Target AUM')) ?? fallback.targetAUM;
+        const monthlyBurn = safeNumber(getValue('Monthly Burn')) ?? fallback.monthlyBurn;
+        const runway = safeNumber(getValue('Runway')) ?? fallback.runway;
+
+        const progress =
+          currentAUM && targetAUM ? Math.min((currentAUM / targetAUM) * 100, 100) : fallback.progress;
+
+        return {
+          currentAUM,
+          targetAUM,
+          monthlyBurn,
+          runway,
+          progress: Number(progress.toFixed(1)),
+        };
+      };
+
+      /**
+       * Parses TechSheet data into objectives list.
+       * TechSheet structure: metric (objective name), value (status string), progress (0-100), last_updated
+       * @param {Array} sheet - TechSheet array from API
+       * @returns {Array} Array of objective objects with objective, status, progress, lastUpdated
+       */
+      const parseObjectives = (sheet) => {
+        if (!Array.isArray(sheet) || sheet.length === 0) return FALLBACK_OBJECTIVES;
+
+        return sheet.map((entry) => {
+          // TechSheet: value field contains the status string (e.g., "Complete", "In Progress")
+          const status = typeof entry?.value === 'string' && entry.value.trim()
+            ? entry.value.trim()
+            : entry?.status || 'Not Started';
+
+          // TechSheet: progress is a separate numeric field (0-100)
+          const progress = safeNumber(entry?.progress);
+
+          return {
+            objective: entry?.metric || 'Objective',
+            status,
+            progress: Math.max(0, Math.min(100, progress ?? 0)),
+            lastUpdated: entry?.last_updated,
+          };
+        });
+      };
+
+      const getSheetLastUpdated = (sheet, fallbackTimestamp) => {
+        if (!Array.isArray(sheet) || sheet.length === 0) return fallbackTimestamp || null;
+        const timestamps = sheet
+          .map((row) => row?.last_updated)
+          .filter(Boolean)
+          .map((value) => dayjs(value))
+          .filter((ts) => ts.isValid());
+        if (timestamps.length === 0) return fallbackTimestamp || null;
+        return timestamps.reduce((latest, ts) => (ts.isAfter(latest) ? ts : latest), timestamps[0]).toISOString();
+      };
+
+      /**
+       * Maps raw API JSON response into structured data for UI components.
+       * 
+       * API Response Structure:
+       * {
+       *   FinanceSheet: [{ metric, value, last_updated }, ...],
+       *   PortfolioSheet: [{ metric, value, last_updated }, ...],
+       *   TechSheet: [{ metric, value (status), progress, last_updated }, ...],
+       *   _metadata: { exported_at, ... }
+       * }
+       * 
+       * Returns structured data with fallbacks if API data is missing:
+       * - portfolioSeries: Chart data for Portfolio Performance widget
+       * - metricCards: Sharpe Ratio, Monthly Return, Hit Rate for Portfolio widget
+       * - fundSummary: Current AUM, Target AUM, Monthly Burn, Runway for Fund Summary widget
+       * - objectives: List of objectives from TechSheet for Strategic Objectives widget
+       * 
+       * @param {Object} raw - Raw JSON response from Apps Script API
+       * @returns {Object} Structured data object with portfolioSeries, metricCards, fundSummary, objectives
+       */
+      const deriveDashboardData = (raw) => {
+        const fallback = {
+          portfolioSeries: FALLBACK_PORTFOLIO_SERIES,
+          metricCards: FALLBACK_METRIC_CARDS,
+          fundSummary: { ...FALLBACK_FUND_SUMMARY },
+          objectives: FALLBACK_OBJECTIVES,
+          metadata: { ...FALLBACK_METADATA },
+          sheetFreshness: {
+            portfolio: null,
+            finance: null,
+            objectives: null,
+          },
+        };
+
+        // ERROR HANDLING: If no API data or invalid JSON, return fallback data (prevents page breakage)
+        // This ensures the page never breaks even if API returns malformed JSON or null
+        if (!raw || typeof raw !== 'object') {
+          console.warn('Invalid or missing API data, using fallback values');
+          return fallback;
+        }
+
+        // Extract sheet arrays from API response (handle various naming conventions)
+        const portfolioSheet = Array.isArray(raw.PortfolioSheet)
+          ? raw.PortfolioSheet
+          : Array.isArray(raw.portfolio)
+          ? raw.portfolio
+          : [];
+
+        const financeSheet = Array.isArray(raw.FinanceSheet)
+          ? raw.FinanceSheet
+          : Array.isArray(raw.finance)
+          ? raw.finance
+          : [];
+
+        const objectivesSheet =
+          (Array.isArray(raw.StrategicObjectivesSheet) && raw.StrategicObjectivesSheet) ||
+          (Array.isArray(raw.ObjectivesSheet) && raw.ObjectivesSheet) ||
+          (Array.isArray(raw.TechSheet) && raw.TechSheet) ||
+          [];
+
+        const metadata = { ...fallback.metadata, ...(raw._metadata || {}) };
+
+        // Parse each sheet into UI-ready structures
+        const portfolioSeries = parsePortfolioSeries(portfolioSheet);
+        const metricCards = parseMetricCards(portfolioSheet);
+        const fundSummary = parseFundSummary(financeSheet);
+        const objectives = parseObjectives(objectivesSheet);
+
+        return {
+          portfolioSeries,
+          metricCards,
+          fundSummary,
+          objectives,
+          metadata,
+          sheetFreshness: {
+            portfolio: getSheetLastUpdated(portfolioSheet, metadata.exported_at),
+            finance: getSheetLastUpdated(financeSheet, metadata.exported_at),
+            objectives: getSheetLastUpdated(objectivesSheet, metadata.exported_at),
+          },
+        };
+      };
+
+      const computeFreshnessDescriptor = (timestamp) => {
+        if (!timestamp) {
+          return {
+            label: 'Unknown',
+            dotClass: 'bg-slate-500',
+            textClass: 'text-white/60',
+            title: 'No update timestamp available',
+          };
+        }
+
+        const updated = dayjs(timestamp);
+        if (!updated.isValid()) {
+          return {
+            label: 'Unknown',
+            dotClass: 'bg-slate-500',
+            textClass: 'text-white/60',
+            title: 'Invalid timestamp',
+          };
+        }
+
+        const diffMinutes = Math.max(0, dayjs().diff(updated, 'minute'));
+
+        if (diffMinutes <= 15) {
+          return {
+            label: `Fresh • ${updated.format('HH:mm')}`,
+            dotClass: 'bg-emerald-400',
+            textClass: 'text-emerald-300',
+            title: `Updated ${updated.format('MMM D, HH:mm')}`,
+          };
+        }
+
+        if (diffMinutes <= 60) {
+          return {
+            label: `Stale • ${updated.format('HH:mm')}`,
+            dotClass: 'bg-amber-400',
+            textClass: 'text-amber-200',
+            title: `Updated ${updated.format('MMM D, HH:mm')}`,
+          };
+        }
+
+        return {
+          label: `Old • ${updated.format('MMM D')}`,
+          dotClass: 'bg-rose-400',
+          textClass: 'text-rose-300',
+          title: `Updated ${updated.format('MMM D, HH:mm')}`,
+        };
+      };
+
+      /**
+       * React hook that fetches live data from Google Apps Script API.
+       * 
+       * API FETCH LOCATION: This hook performs the GET request to DATA_ENDPOINT with ?token=...
+       * - Fetches on component mount
+       * - Auto-refreshes every REFRESH_INTERVAL_MS (default: 10 minutes)
+       * - Manual refresh available via returned refetch() function
+       * 
+       * Returns: { data, isLoading, error, lastUpdated, refetch }
+       * - data: Raw JSON from API (FinanceSheet, PortfolioSheet, TechSheet arrays)
+       * - isLoading: true during fetch
+       * - error: Error message if fetch fails (null on success)
+       * - lastUpdated: Timestamp from _metadata.exported_at
+       * - refetch: Function to manually trigger refresh
+       * 
+       * On error: Returns error state but does not break page (fallback data used in UI)
+       */
+      const useAlphaFundMetrics = ({
+        url = DATA_ENDPOINT,
+        token = DATA_TOKEN,
+        refreshMs = REFRESH_INTERVAL_MS,
+      } = {}) => {
+        const [state, setState] = useState({
+          data: null,
+          isLoading: true,
+          error: null,
+          lastUpdated: null,
+        });
+
+        const fetchData = useCallback(async () => {
+          if (!url) {
+            setState((prev) => ({
+              ...prev,
+              isLoading: false,
+              error: 'Data endpoint is not configured.',
+            }));
+            return;
+          }
+
+          setState((prev) => ({ ...prev, isLoading: true }));
+
+          try {
+            // API FETCH: Simple GET request (no custom headers or cache options) to avoid CORS preflight
+            // URL is constructed by appending ?token=... to DATA_ENDPOINT
+            // Apps Script responds with JSON and CORS headers (see AlphaFund_DataPipeline.gs)
+            const response = await fetch(buildUrlWithToken(url, token));
+            if (!response.ok) {
+              throw new Error(`Request failed with status ${response.status}`);
+            }
+            const payload = await response.json();
+            setState({
+              data: payload,
+              isLoading: false,
+              error: null,
+              lastUpdated: payload?._metadata?.exported_at ?? new Date().toISOString(),
+            });
+          } catch (err) {
+            // Error logged to console, fallback data will be used in UI
+            console.error('Failed to fetch dashboard data:', err);
+            setState((prev) => ({
+              ...prev,
+              isLoading: false,
+              error: err.message || 'Unable to load dashboard data.',
+            }));
+          }
+        }, [url, token]);
+
+        useEffect(() => {
+          fetchData();
+          const intervalId = setInterval(fetchData, refreshMs);
+          return () => clearInterval(intervalId);
+        }, [fetchData, refreshMs]);
+
+        return {
+          ...state,
+          refetch: fetchData,
+        };
+      };
+
+      const FreshnessTag = ({ status }) => {
+        if (!status) return null;
+        return (
+          <span
+            className={`inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold ${status.textClass}`}
+            title={status.title}
+          >
+            <span className={`h-2 w-2 rounded-full ${status.dotClass}`} />
+            {status.label}
+          </span>
+        );
+      };
+
+      const MetricCard = ({ label, value, trend, hint }) => (
+        <div
+          className="card-hover rounded-2xl border border-alphafund-border/50 bg-alphafund-surface/80 p-4 shadow-xl backdrop-blur"
+          title={hint}
+        >
           <p className="text-sm text-white/60">{label}</p>
           <div className="mt-1 flex items-baseline gap-2">
             <span className="text-2xl font-semibold text-white">{value}</span>
-            {trend ? (
-              <span className={`text-sm font-medium ${trend > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {typeof trend === 'number' && !Number.isNaN(trend) ? (
+              <span
+                className={`text-sm font-medium ${
+                  trend > 0 ? 'text-emerald-400' : trend < 0 ? 'text-rose-400' : 'text-white/60'
+                }`}
+              >
                 {trend > 0 ? '+' : ''}
-                {trend}%
+                {trend.toFixed(2)}
               </span>
             ) : null}
           </div>
@@ -104,67 +626,57 @@
       );
 
       const StatusPill = ({ status }) => {
+        if (!status) return null;
+        const normalized = status.trim();
         const map = {
           Complete: { color: '#34D399', icon: '✅' },
+          Completed: { color: '#34D399', icon: '✅' },
           'In Progress': { color: '#FBBF24', icon: '🟡' },
+          Progressing: { color: '#FBBF24', icon: '🟡' },
+          'At Risk': { color: '#F97316', icon: '⚠️' },
+          Blocked: { color: '#F87171', icon: '⛔️' },
+          Delayed: { color: '#F97316', icon: '⚠️' },
           'Not Started': { color: '#9CA3AF', icon: '⚪' },
         };
-        const { color, icon } = map[status] ?? map['Not Started'];
+        const { color, icon } = map[normalized] ?? map['Not Started'];
         return (
-          <span
-            className="status-pill"
-            style={{ backgroundColor: `${color}1a`, color }}
-          >
+          <span className="status-pill" style={{ backgroundColor: `${color}1a`, color }}>
             <span>{icon}</span>
-            {status}
+            {normalized}
           </span>
         );
       };
 
-      const PortfolioPerformance = () => {
-        const data = useMemo(() => {
-          const baseDate = dayjs();
-          const generateSeries = (start, volatility) =>
-            Array.from({ length: 30 }).map((_, index) => {
-              const drift = start + index * (Math.random() * volatility - volatility / 2);
-              return Math.max(drift, 95 + Math.random() * 5);
-            });
+      const ErrorBanner = ({ message }) => (
+        <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200 shadow-inner shadow-rose-900/20">
+          {message}
+        </div>
+      );
 
-          const alphaSeries = generateSeries(105, 3);
-          const spSeries = generateSeries(100, 2.2);
-          const qqqSeries = generateSeries(102, 2.5);
-
-          return alphaSeries.map((value, index) => ({
-            date: baseDate.subtract(29 - index, 'day').format('MMM D'),
-            alpha: Number(value.toFixed(2)),
-            sp500: Number(spSeries[index].toFixed(2)),
-            qqq: Number(qqqSeries[index].toFixed(2)),
-          }));
-        }, []);
-
-        return (
-          <div className="card-hover flex h-full flex-col rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
-            <div className="mb-6 flex items-start justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-white">📈 Portfolio Performance</h2>
-                <p className="text-sm text-white/60">Trailing 30-day relative performance</p>
-              </div>
-              <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/60">
-                Hypothetical data
-              </div>
+      const PortfolioPerformance = ({ series, metrics, status, isLoading, isRefreshing, error }) => (
+        <div className="card-hover flex h-full flex-col rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
+          <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-white">📈 Portfolio Performance</h2>
+              <p className="text-sm text-white/60">Trailing 30-day relative performance</p>
             </div>
-            <div className="h-64 w-full">
+            <div className="flex items-center gap-2 text-xs">
+              <FreshnessTag status={status} />
+              {isRefreshing ? <span className="text-white/60">Refreshing…</span> : null}
+            </div>
+          </div>
+
+          {error ? (
+            <ErrorBanner message="Unable to load live performance data. Displaying last known values." />
+          ) : null}
+
+          <div className="h-64 w-full">
+            {series && series.length > 1 ? (
               <ResponsiveContainer>
-                <LineChart data={data} margin={{ top: 10, right: 15, bottom: 5, left: 0 }}>
-                  <defs>
-                    <linearGradient id="colorAlpha" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#7B61FF" stopOpacity={0.8} />
-                      <stop offset="95%" stopColor="#7B61FF" stopOpacity={0.1} />
-                    </linearGradient>
-                  </defs>
+                <LineChart data={series} margin={{ top: 10, right: 15, bottom: 5, left: 0 }}>
                   <CartesianGrid stroke="#ffffff10" strokeDasharray="3 3" />
                   <XAxis dataKey="date" stroke="#ffffff60" tickLine={false} axisLine={false} minTickGap={20} />
-                  <YAxis stroke="#ffffff40" tickLine={false} axisLine={false} domain={[95, 115]} />
+                  <YAxis stroke="#ffffff40" tickLine={false} axisLine={false} />
                   <Tooltip
                     contentStyle={{
                       backgroundColor: '#120D1F',
@@ -173,34 +685,48 @@
                       color: '#fff',
                     }}
                   />
-                  <Legend
-                    wrapperStyle={{ color: '#fff', paddingTop: '8px' }}
-                    iconType="circle"
-                    verticalAlign="bottom"
-                  />
+                  <Legend wrapperStyle={{ color: '#fff', paddingTop: '8px' }} iconType="circle" verticalAlign="bottom" />
                   <Line type="monotone" dataKey="alpha" name="AlphaFund Model" stroke="#7B61FF" strokeWidth={2.4} dot={false} />
                   <Line type="monotone" dataKey="sp500" name="S&P 500" stroke="#38BDF8" strokeWidth={2} dot={false} strokeDasharray="5 4" />
                   <Line type="monotone" dataKey="qqq" name="QQQ" stroke="#F472B6" strokeWidth={2} dot={false} strokeDasharray="3 4 5 2" />
                 </LineChart>
               </ResponsiveContainer>
-            </div>
-            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <MetricCard label="Sharpe Ratio" value="1.82" trend={0.12} />
-              <MetricCard label="Monthly Return" value="62%" trend={0.6} />
-              <MetricCard label="Hit Rate" value="62%" trend={-1.5} />
-            </div>
+            ) : (
+              <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-white/10 bg-black/10 text-sm text-white/50">
+                No time-series data available yet.
+              </div>
+            )}
           </div>
-        );
-      };
 
-      const FundSummary = () => {
-        const currentAUM = 29834093;
-        const targetAUM = 50000000;
-        const progress = Math.min((currentAUM / targetAUM) * 100, 100).toFixed(1);
+          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {metrics.map((metric) => (
+              <MetricCard key={metric.label} {...metric} />
+            ))}
+          </div>
+
+          {isLoading && !isRefreshing ? (
+            <p className="mt-4 text-xs text-white/60">Loading live portfolio metrics…</p>
+          ) : null}
+        </div>
+      );
+
+      const FundSummary = ({ summary, status, isLoading, isRefreshing, error }) => {
+        const { currentAUM, targetAUM, monthlyBurn, runway, progress } = summary;
         return (
           <div className="card-hover flex h-full flex-col rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
-            <h2 className="text-lg font-semibold text-white">💰 Fund Summary</h2>
-            <p className="mt-1 text-sm text-white/60">Quick snapshot of key capital metrics</p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">💰 Fund Summary</h2>
+                <p className="mt-1 text-sm text-white/60">Live capital snapshot</p>
+              </div>
+              <FreshnessTag status={status} />
+            </div>
+
+            {error ? (
+              <div className="mt-4">
+                <ErrorBanner message="Using fallback capital metrics until data refresh succeeds." />
+              </div>
+            ) : null}
 
             <div className="mt-8 space-y-5">
               <div>
@@ -214,23 +740,25 @@
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-white/50">Monthly Burn</p>
-                  <p className="text-xl font-semibold text-rose-300">{formatCurrency(90301)}</p>
+                  <p className="text-xl font-semibold text-rose-300">{formatCurrency(monthlyBurn)}</p>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-5">
                 <div>
                   <p className="text-xs uppercase tracking-wide text-white/50">Runway</p>
-                  <p className="text-xl font-semibold text-white/90">6.5 months</p>
+                  <p className="text-xl font-semibold text-white/90">
+                    {typeof runway === 'number' ? `${runway.toFixed(1)} months` : runway}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-white/50">Progress</p>
-                  <p className="text-xl font-semibold text-white/90">{progress}%</p>
+                  <p className="text-xl font-semibold text-white/90">{progress.toFixed(1)}%</p>
                 </div>
               </div>
               <div className="mt-3">
                 <div className="flex items-center justify-between text-xs uppercase tracking-wide text-white/50">
                   <span>AlphaFund Capitalization</span>
-                  <span>{progress}%</span>
+                  <span>{progress.toFixed(1)}%</span>
                 </div>
                 <div className="mt-2 h-3 w-full rounded-full bg-white/10">
                   <div
@@ -240,61 +768,101 @@
                 </div>
               </div>
             </div>
+
+            {isLoading && !isRefreshing ? (
+              <p className="mt-4 text-xs text-white/60">Loading live finance metrics…</p>
+            ) : null}
           </div>
         );
       };
 
-      const StrategicObjectives = () => {
-        const objectives = [
-          {
-            objective: 'Launch Mark III Live',
-            status: 'Complete',
-            progress: 100,
-          },
-          {
-            objective: 'Secure $5–10M Raise',
-            status: 'In Progress',
-            progress: 40,
-          },
-          {
-            objective: 'Build ETF Partnership',
-            status: 'Not Started',
-            progress: 0,
-          },
-        ];
+      const StrategicObjectives = ({ objectives, status, isLoading, isRefreshing, error }) => (
+        <div className="card-hover rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-white">🎯 Strategic Objectives</h2>
+              <p className="mt-1 text-sm text-white/60">Execution roadmap for AlphaFund 2025</p>
+            </div>
+            <FreshnessTag status={status} />
+          </div>
 
-        return (
-          <div className="card-hover rounded-3xl border border-alphafund-border bg-alphafund-surface/80 p-6 shadow-xl backdrop-blur">
-            <h2 className="text-lg font-semibold text-white">🎯 Strategic Objectives</h2>
-            <p className="mt-1 text-sm text-white/60">Execution roadmap for AlphaFund 2025</p>
+          {error ? (
+            <div className="mt-4">
+              <ErrorBanner message="Objective statuses may be out of date until the next successful refresh." />
+            </div>
+          ) : null}
 
-            <div className="mt-6 overflow-hidden rounded-2xl border border-white/5 bg-white/5">
-              <div className="grid grid-cols-12 bg-white/5 px-6 py-3 text-xs font-semibold uppercase tracking-wide text-white/60">
-                <span className="col-span-6 md:col-span-6">Objective</span>
-                <span className="col-span-3 md:col-span-3">Status</span>
-                <span className="col-span-3 md:col-span-3 text-right">Progress</span>
-              </div>
-              <div>
-                {objectives.map(({ objective, status, progress }) => (
+          <div className="mt-6 overflow-hidden rounded-2xl border border-white/5 bg-white/5">
+            <div className="grid grid-cols-12 bg-white/5 px-6 py-3 text-xs font-semibold uppercase tracking-wide text-white/60">
+              <span className="col-span-6 md:col-span-6">Objective</span>
+              <span className="col-span-3 md:col-span-3">Status</span>
+              <span className="col-span-3 md:col-span-3 text-right">Progress</span>
+            </div>
+            <div>
+              {objectives.length > 0 ? (
+                objectives.map(({ objective, status: itemStatus, progress }, index) => (
                   <div
-                    key={objective}
+                    key={`${objective}-${index}`}
                     className="grid grid-cols-12 items-center px-6 py-4 text-sm text-white/90 odd:bg-white/0 even:bg-white/5"
                   >
                     <span className="col-span-6 font-medium md:col-span-6">{objective}</span>
                     <span className="col-span-3 md:col-span-3">
-                      <StatusPill status={status} />
+                      <StatusPill status={itemStatus} />
                     </span>
-                    <span className="col-span-3 text-right md:col-span-3">{progress}%</span>
+                    <span className="col-span-3 text-right md:col-span-3">{Math.round(progress)}%</span>
                   </div>
-                ))}
-              </div>
+                ))
+              ) : (
+                <div className="px-6 py-6 text-sm text-white/60">
+                  No objectives found. Populate the TechSheet / StrategicObjectives sheet to drive this view.
+                </div>
+              )}
             </div>
           </div>
-        );
-      };
 
+          {isLoading && !isRefreshing ? (
+            <p className="mt-4 text-xs text-white/60">Loading strategic objectives…</p>
+          ) : null}
+        </div>
+      );
+
+      /**
+       * Main Dashboard component.
+       * 
+       * DATA FLOW:
+       * 1. useAlphaFundMetrics() fetches live data from Apps Script API (see hook above)
+       * 2. deriveDashboardData() maps API response into UI-ready structures
+       * 3. UI components receive live data or fallback data if API fails
+       * 
+       * UI COMPONENTS USING LIVE DATA:
+       * - PortfolioPerformance: Uses derived.portfolioSeries (chart) and derived.metricCards (Sharpe, Return, Hit Rate)
+       * - FundSummary: Uses derived.fundSummary (Current AUM, Target AUM, Monthly Burn, Runway)
+       * - StrategicObjectives: Uses derived.objectives (from TechSheet: objective, status, progress)
+       * 
+       * FALLBACK BEHAVIOR: If API fails or returns invalid JSON, all widgets display fallback data
+       * (see FALLBACK_* constants) and error banner is shown. Page never breaks.
+       */
       const Dashboard = () => {
         const [now, setNow] = useState(dayjs());
+        // API FETCH: Hook fetches from DATA_ENDPOINT with token, auto-refreshes every REFRESH_INTERVAL_MS
+        const { data, isLoading, error, lastUpdated, refetch } = useAlphaFundMetrics();
+        // DATA MAPPING: Converts raw API JSON into structured data for UI components
+        const derived = useMemo(() => deriveDashboardData(data), [data]);
+
+        const hasData = Boolean(data);
+        const isInitialLoading = isLoading && !hasData;
+        const isRefreshing = isLoading && hasData;
+
+        const overallFreshness = computeFreshnessDescriptor(lastUpdated || derived.metadata.exported_at);
+        const portfolioFreshness = computeFreshnessDescriptor(
+          derived.sheetFreshness.portfolio || derived.metadata.exported_at,
+        );
+        const financeFreshness = computeFreshnessDescriptor(
+          derived.sheetFreshness.finance || derived.metadata.exported_at,
+        );
+        const objectivesFreshness = computeFreshnessDescriptor(
+          derived.sheetFreshness.objectives || derived.metadata.exported_at,
+        );
 
         useEffect(() => {
           const timer = setInterval(() => setNow(dayjs()), 1000);
@@ -318,22 +886,61 @@
                     <p className="text-xs uppercase tracking-wide text-white/50">Quantitative Alpha • Internal</p>
                   </div>
                 </div>
-                <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/70">
-                  {now.format('dddd, MMM D YYYY • HH:mm:ss')}
+                <div className="flex flex-col items-end gap-2 text-right">
+                  <div className="flex items-center gap-2">
+                    <FreshnessTag status={overallFreshness} />
+                    <button
+                      onClick={refetch}
+                      className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-medium text-white/80 transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={isRefreshing}
+                    >
+                      {isRefreshing ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                  </div>
+                  <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/70">
+                    {now.format('dddd, MMM D YYYY • HH:mm:ss')}
+                  </div>
                 </div>
               </div>
             </header>
 
             <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col px-6 pb-12 pt-8">
+              {error ? (
+                <div className="mb-6">
+                  <ErrorBanner message={error} />
+                </div>
+              ) : null}
+              {isInitialLoading ? (
+                <p className="mb-4 text-sm text-white/60">Fetching live data…</p>
+              ) : null}
               <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
                 <div className="xl:col-span-2">
-                  <PortfolioPerformance />
+                  <PortfolioPerformance
+                    series={derived.portfolioSeries}
+                    metrics={derived.metricCards}
+                    status={portfolioFreshness}
+                    isLoading={isLoading}
+                    isRefreshing={isRefreshing}
+                    error={error}
+                  />
                 </div>
                 <div className="xl:col-span-1">
-                  <FundSummary />
+                  <FundSummary
+                    summary={derived.fundSummary}
+                    status={financeFreshness}
+                    isLoading={isLoading}
+                    isRefreshing={isRefreshing}
+                    error={error}
+                  />
                 </div>
                 <div className="xl:col-span-3">
-                  <StrategicObjectives />
+                  <StrategicObjectives
+                    objectives={derived.objectives}
+                    status={objectivesFreshness}
+                    isLoading={isLoading}
+                    isRefreshing={isRefreshing}
+                    error={error}
+                  />
                 </div>
               </div>
             </main>
@@ -353,4 +960,3 @@
     </script>
   </body>
 </html>
-
